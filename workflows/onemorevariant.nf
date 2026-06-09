@@ -3,11 +3,19 @@
     IMPORT MODULES / SUBWORKFLOWS / FUNCTIONS
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 */
-include { MULTIQC                } from '../modules/nf-core/multiqc/main'
-include { paramsSummaryMap       } from 'plugin/nf-schema'
-include { paramsSummaryMultiqc   } from '../subworkflows/nf-core/utils_nfcore_pipeline'
-include { softwareVersionsToYAML } from '../subworkflows/nf-core/utils_nfcore_pipeline'
-include { methodsDescriptionText } from '../subworkflows/local/utils_nfcore_onemorevariant_pipeline'
+include { MULTIQC                              } from '../modules/nf-core/multiqc/main'
+include { BCFTOOLS_VIEW                        } from '../modules/nf-core/bcftools/view/main'
+include { BCFTOOLS_NORM                        } from '../modules/nf-core/bcftools/norm/main'
+include { BCFTOOLS_CONCAT                      } from '../modules/nf-core/bcftools/concat/main'
+include { BCFTOOLS_SORT                        } from '../modules/nf-core/bcftools/sort/main'
+include { BCFTOOLS_ISEC                        } from '../modules/nf-core/bcftools/isec/main'
+include { STRATIFY_VARIANTS                    } from '../modules/local/stratify_variants/main'
+include { AGGREGATE_RESULTS as AGGREGATE_SNV   } from '../modules/local/aggregate_results/main'
+include { AGGREGATE_RESULTS as AGGREGATE_INDEL } from '../modules/local/aggregate_results/main'
+include { paramsSummaryMap                     } from 'plugin/nf-schema'
+include { paramsSummaryMultiqc                 } from '../subworkflows/nf-core/utils_nfcore_pipeline'
+include { softwareVersionsToYAML               } from '../subworkflows/nf-core/utils_nfcore_pipeline'
+include { methodsDescriptionText               } from '../subworkflows/local/utils_nfcore_onemorevariant_pipeline'
 
 /*
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -16,9 +24,8 @@ include { methodsDescriptionText } from '../subworkflows/local/utils_nfcore_onem
 */
 
 workflow ONEMOREVARIANT {
-
     take:
-    ch_samplesheet // channel: samplesheet read in from --input
+    ch_samplesheet // channel: [ [meta], vcf ]
     multiqc_config
     multiqc_logo
     multiqc_methods_description
@@ -26,8 +33,149 @@ workflow ONEMOREVARIANT {
 
     main:
 
-    def ch_versions = channel.empty()
     def ch_multiqc_files = channel.empty()
+
+    // Prepare reference fasta channel
+    def ch_fasta = channel.value([[id: 'reference'], file(params.fasta, checkIfExists: true)])
+
+    //
+    // STEP 1: PREPROCESS — bcftools view (PASS filter + contig filter) on all VCFs
+    //
+    // Input channel: [ meta, vcf, [], [] ] — no regions, no targets files, no samples
+    def ch_view_input = ch_samplesheet.map { meta, vcf ->
+        [meta, vcf, [], []]
+    }
+
+    BCFTOOLS_VIEW(ch_view_input, [], [], [])
+
+    //
+    // STEP 2: NORMALIZE — bcftools norm (split multiallelic + left-align) on filtered VCFs
+    //
+    def ch_norm_input = BCFTOOLS_VIEW.out.vcf.map { meta, vcf ->
+        [meta, vcf, []]
+    }
+
+    BCFTOOLS_NORM(ch_norm_input, ch_fasta)
+
+    //
+    // STEP 3: BUILD TRUTH — group truth VCFs by sample × variant_type, apply strategy
+    //
+    // Separate truth and query channels
+    def ch_preprocessed = BCFTOOLS_NORM.out.vcf
+
+    def ch_truth = ch_preprocessed.filter { meta, _vcf -> meta.category == 'truth' }
+
+    def ch_query = ch_preprocessed.filter { meta, _vcf -> meta.category == 'query' }
+
+    // Group truth VCFs by sample × variant_type for truth construction
+    // Key: [sample, variant] -> list of [meta, vcf] entries
+    def ch_truth_grouped = ch_truth
+        .map { meta, vcf -> [[id: meta.id, variant: meta.variant], meta, vcf] }
+        .groupTuple(by: 0)
+        .map { group_key, metas, vcfs ->
+            // Determine strategy based on variant type
+            def strategy = group_key.variant == 'snv' ? params.snv_truth : params.indel_truth
+            def callers = metas.collect { it.caller }
+
+            if (strategy == 'intersect') {
+                // Intersect — will be handled by isec downstream
+                return [[id: group_key.id, variant: group_key.variant, _intersect: true], vcfs, []]
+            }
+            else if (strategy != 'union' && strategy in callers) {
+                // Single caller strategy — find matching VCF
+                def idx = callers.indexOf(strategy)
+                return [[id: group_key.id, variant: group_key.variant], [vcfs[idx]], []]
+            }
+            else {
+                // Union strategy (default) — also used as fallback if caller name not found
+                return [[id: group_key.id, variant: group_key.variant], vcfs, []]
+            }
+        }
+
+    // For union strategy: concat (with --remove-duplicates) → sort
+    def ch_truth_to_concat = ch_truth_grouped
+        .filter { meta, vcfs, _tbi -> !meta.containsKey('_intersect') && vcfs.size() > 1 }
+        .map { meta, vcfs, tbi -> [meta, vcfs, tbi] }
+
+    def ch_truth_single = ch_truth_grouped
+        .filter { meta, vcfs, _tbi -> !meta.containsKey('_intersect') && vcfs.size() == 1 }
+        .map { meta, vcfs, _tbi -> [meta, vcfs[0]] }
+
+    BCFTOOLS_CONCAT(ch_truth_to_concat)
+    BCFTOOLS_SORT(BCFTOOLS_CONCAT.out.vcf)
+
+    // Combine single-VCF truth with concat+sort multi-VCF truth
+    def ch_truth_final = ch_truth_single.mix(BCFTOOLS_SORT.out.vcf)
+
+    //
+    // STEP 4: BENCHMARK — bcftools isec (truth vs query)
+    //
+    // Join query VCFs with their corresponding truth by [sample, variant]
+    def ch_query_keyed = ch_query.map { meta, vcf ->
+        [[id: meta.id, variant: meta.variant], meta, vcf]
+    }
+
+    def ch_truth_keyed = ch_truth_final.map { meta, vcf ->
+        [[id: meta.id, variant: meta.variant], vcf]
+    }
+
+    // Combine: each query gets paired with its truth
+    def ch_isec_input = ch_query_keyed
+        .combine(ch_truth_keyed, by: 0)
+        .map { _group_key, query_meta, query_vcf, truth_vcf ->
+            // bcftools isec input: [meta, [vcfs], [tbis], file_list, targets, regions]
+            def meta = [
+                id: "${query_meta.id}_${query_meta.caller}_${query_meta.variant}",
+                sample: query_meta.id,
+                caller: query_meta.caller,
+                variant: query_meta.variant,
+            ]
+            [meta, [truth_vcf, query_vcf], [], [], [], []]
+        }
+
+    BCFTOOLS_ISEC(ch_isec_input)
+
+    //
+    // STEP 5: STRATIFY — bedtools intersect TP/FP/FN against stratification BEDs
+    //
+    if (params.stratification) {
+        // Prepare stratification manifest
+        def ch_stratification = channel.value(file(params.stratification, checkIfExists: true))
+
+        // Extract TP, FP, FN VCFs from isec results directory
+        def ch_isec_results = BCFTOOLS_ISEC.out.results.map { meta, results_dir ->
+            def tp = file("${results_dir}/0002.vcf.gz").exists()
+                ? file("${results_dir}/0002.vcf.gz")
+                : file("${results_dir}/0002.vcf")
+            def fp = file("${results_dir}/0001.vcf.gz").exists()
+                ? file("${results_dir}/0001.vcf.gz")
+                : file("${results_dir}/0001.vcf")
+            def fn = file("${results_dir}/0000.vcf.gz").exists()
+                ? file("${results_dir}/0000.vcf.gz")
+                : file("${results_dir}/0000.vcf")
+            [meta, tp, fp, fn]
+        }
+
+        STRATIFY_VARIANTS(ch_isec_results, ch_stratification)
+
+        //
+        // STEP 6: AGGREGATE — collect per variant_type and compute summary stats
+        //
+        def ch_stratified_snv = STRATIFY_VARIANTS.out.stratified_calls
+            .filter { meta, _calls -> meta.variant == 'snv' }
+            .map { _meta, calls -> calls }
+            .collect()
+            .map { calls -> ['snv', calls] }
+
+        def ch_stratified_indel = STRATIFY_VARIANTS.out.stratified_calls
+            .filter { meta, _calls -> meta.variant == 'indel' }
+            .map { _meta, calls -> calls }
+            .collect()
+            .map { calls -> ['indel', calls] }
+
+        AGGREGATE_SNV(ch_stratified_snv)
+        AGGREGATE_INDEL(ch_stratified_indel)
+    }
 
     //
     // Collate and save software versions
@@ -41,21 +189,21 @@ workflow ONEMOREVARIANT {
 
     def topic_versions_string = topic_versions.versions_tuple
         .map { process, tool, version ->
-            [ process[process.lastIndexOf(':')+1..-1], "  ${tool}: ${version}" ]
+            [process[process.lastIndexOf(':') + 1..-1], "  ${tool}: ${version}"]
         }
-        .groupTuple(by:0)
+        .groupTuple(by: 0)
         .map { process, tool_versions ->
             tool_versions.unique().sort()
             "${process}:\n${tool_versions.join('\n')}"
         }
 
-    def ch_collated_versions = softwareVersionsToYAML(ch_versions.mix(topic_versions.versions_file))
+    def ch_collated_versions = softwareVersionsToYAML(topic_versions.versions_file)
         .mix(topic_versions_string)
         .collectFile(
             storeDir: "${outdir}/pipeline_info",
-            name:  'onemorevariant_software_'  + 'mqc_'  + 'versions.yml',
+            name: 'onemorevariant_software_' + 'mqc_' + 'versions.yml',
             sort: true,
-            newLine: true
+            newLine: true,
         )
 
     //
@@ -84,12 +232,7 @@ workflow ONEMOREVARIANT {
             ]
         }
     )
-    emit:multiqc_report = MULTIQC.out.report.map { _meta, report -> [report] }.toList() // channel: /path/to/multiqc_report.html
-    versions       = ch_versions                 // channel: [ path(versions.yml) ]
-}
 
-/*
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    THE END
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-*/
+    emit:
+    multiqc_report = MULTIQC.out.report.map { _meta, report -> [report] }.toList()
+}

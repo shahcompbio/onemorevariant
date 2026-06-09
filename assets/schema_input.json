@@ -13,21 +13,32 @@
                 "errorMessage": "Sample name must be provided and cannot contain spaces",
                 "meta": ["id"]
             },
-            "fastq_1": {
+            "variant": {
                 "type": "string",
-                "format": "file-path",
-                "exists": true,
-                "pattern": "^([\\S\\s]*\\/)?[^\\s\\/]+\\.f(ast)?q\\.gz$",
-                "errorMessage": "FastQ file for reads 1 must be provided, cannot contain spaces and must have extension '.fq.gz' or '.fastq.gz'"
+                "enum": ["snv", "indel"],
+                "errorMessage": "Variant type must be 'snv' or 'indel'",
+                "meta": ["variant"]
             },
-            "fastq_2": {
+            "caller": {
+                "type": "string",
+                "pattern": "^\\S+$",
+                "errorMessage": "Caller name must be provided and cannot contain spaces",
+                "meta": ["caller"]
+            },
+            "category": {
+                "type": "string",
+                "enum": ["query", "truth"],
+                "errorMessage": "Category must be 'query' or 'truth'",
+                "meta": ["category"]
+            },
+            "vcf": {
                 "type": "string",
                 "format": "file-path",
                 "exists": true,
-                "pattern": "^([\\S\\s]*\\/)?[^\\s\\/]+\\.f(ast)?q\\.gz$",
-                "errorMessage": "FastQ file for reads 2 cannot contain spaces and must have extension '.fq.gz' or '.fastq.gz'"
+                "pattern": "^\\S+\\.vcf(\\.gz)?$",
+                "errorMessage": "VCF file must be provided, cannot contain spaces and must have extension '.vcf' or '.vcf.gz'"
             }
         },
-        "required": ["sample", "fastq_1"]
+        "required": ["sample", "variant", "caller", "category", "vcf"]
     }
 }
