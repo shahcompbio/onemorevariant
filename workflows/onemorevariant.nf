@@ -9,6 +9,7 @@ include { BCFTOOLS_NORM                        } from '../modules/nf-core/bcftoo
 include { BCFTOOLS_CONCAT                      } from '../modules/nf-core/bcftools/concat/main'
 include { BCFTOOLS_SORT                        } from '../modules/nf-core/bcftools/sort/main'
 include { BCFTOOLS_ISEC                        } from '../modules/nf-core/bcftools/isec/main'
+include { BCFTOOLS_REHEADER                    } from '../modules/nf-core/bcftools/reheader/main'
 include { STRATIFY_VARIANTS                    } from '../modules/local/stratify_variants/main'
 include { AGGREGATE_RESULTS as AGGREGATE_SNV   } from '../modules/local/aggregate_results/main'
 include { AGGREGATE_RESULTS as AGGREGATE_INDEL } from '../modules/local/aggregate_results/main'
@@ -58,10 +59,22 @@ workflow ONEMOREVARIANT {
     BCFTOOLS_NORM(ch_norm_input, ch_fasta)
 
     //
+    // STEP 2b: REHEADER — standardize sample names to meta.id
+    //
+    def ch_reheader_input = BCFTOOLS_NORM.out.vcf.map { meta, vcf ->
+        def samples_file = file("${workDir}/reheader/${meta.id}_${meta.caller}_${meta.variant}_samples.txt")
+        samples_file.parent.mkdirs()
+        samples_file.text = "${meta.id}\n"
+        [meta, vcf, [], samples_file]
+    }
+
+    BCFTOOLS_REHEADER(ch_reheader_input, [[], []])
+
+    //
     // STEP 3: BUILD TRUTH — group truth VCFs by sample × variant_type, apply strategy
     //
     // Separate truth and query channels
-    def ch_preprocessed = BCFTOOLS_NORM.out.vcf
+    def ch_preprocessed = BCFTOOLS_REHEADER.out.vcf
 
     def ch_truth = ch_preprocessed.filter { meta, _vcf -> meta.category == 'truth' }
 
