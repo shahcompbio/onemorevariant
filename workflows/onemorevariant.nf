@@ -73,69 +73,71 @@ workflow ONEMOREVARIANT {
     //
     // STEP 3: BUILD TRUTH — group truth VCFs by sample × variant_type, apply strategy
     //
-    // Separate truth and query channels
-    def ch_preprocessed = BCFTOOLS_REHEADER.out.vcf
+    // Separate truth and query channels — join vcf with index
+    def ch_preprocessed = BCFTOOLS_REHEADER.out.vcf.join(BCFTOOLS_REHEADER.out.index, by: [0])
 
-    def ch_truth = ch_preprocessed.filter { meta, _vcf -> meta.category == 'truth' }
+    def ch_truth = ch_preprocessed.filter { meta, _vcf, _tbi -> meta.category == 'truth' }
 
-    def ch_query = ch_preprocessed.filter { meta, _vcf -> meta.category == 'query' }
+    def ch_query = ch_preprocessed.filter { meta, _vcf, _tbi -> meta.category == 'query' }
 
     // Group truth VCFs by sample × variant_type for truth construction
     // Key: [sample, variant] -> list of [meta, vcf] entries
     def ch_truth_grouped = ch_truth
-        .map { meta, vcf -> [[id: meta.id, variant: meta.variant], meta, vcf] }
+        .map { meta, vcf, tbi -> [[id: meta.id, variant: meta.variant], meta, vcf, tbi] }
         .groupTuple(by: 0)
-        .map { group_key, metas, vcfs ->
+        .map { group_key, metas, vcfs, tbis ->
             // Determine strategy based on variant type
             def strategy = group_key.variant == 'snv' ? params.snv_truth : params.indel_truth
             def callers = metas.collect { it.caller }
 
             if (strategy == 'intersect') {
                 // Intersect — will be handled by isec downstream
-                return [[id: group_key.id, variant: group_key.variant, _intersect: true], vcfs, []]
+                return [[id: group_key.id, variant: group_key.variant, _intersect: true], vcfs, tbis]
             }
             else if (strategy != 'union' && strategy in callers) {
                 // Single caller strategy — find matching VCF
                 def idx = callers.indexOf(strategy)
-                return [[id: group_key.id, variant: group_key.variant], [vcfs[idx]], []]
+                return [[id: group_key.id, variant: group_key.variant], [vcfs[idx]], [tbis[idx]]]
             }
             else {
                 // Union strategy (default) — also used as fallback if caller name not found
-                return [[id: group_key.id, variant: group_key.variant], vcfs, []]
+                return [[id: group_key.id, variant: group_key.variant], vcfs, tbis]
             }
         }
 
     // For union strategy: concat (with --remove-duplicates) → sort
     def ch_truth_to_concat = ch_truth_grouped
-        .filter { meta, vcfs, _tbi -> !meta.containsKey('_intersect') && vcfs.size() > 1 }
-        .map { meta, vcfs, tbi -> [meta, vcfs, tbi] }
+        .filter { meta, vcfs, _tbis -> !meta.containsKey('_intersect') && vcfs.size() > 1 }
+        .map { meta, vcfs, tbis -> [meta, vcfs, tbis] }
 
     def ch_truth_single = ch_truth_grouped
-        .filter { meta, vcfs, _tbi -> !meta.containsKey('_intersect') && vcfs.size() == 1 }
-        .map { meta, vcfs, _tbi -> [meta, vcfs[0]] }
+        .filter { meta, vcfs, _tbis -> !meta.containsKey('_intersect') && vcfs.size() == 1 }
+        .map { meta, vcfs, tbis -> [meta, vcfs[0], tbis[0]] }
 
     BCFTOOLS_CONCAT(ch_truth_to_concat)
     BCFTOOLS_SORT(BCFTOOLS_CONCAT.out.vcf)
 
-    // Combine single-VCF truth with concat+sort multi-VCF truth
-    def ch_truth_final = ch_truth_single.mix(BCFTOOLS_SORT.out.vcf)
+    // Combine single-VCF truth with concat+sort multi-VCF truth (with indexes)
+    def ch_truth_sort_with_idx = BCFTOOLS_SORT.out.vcf.join(BCFTOOLS_SORT.out.index, by: [0])
+
+    def ch_truth_final = ch_truth_single.mix(ch_truth_sort_with_idx)
 
     //
     // STEP 4: BENCHMARK — bcftools isec (truth vs query)
     //
     // Join query VCFs with their corresponding truth by [sample, variant]
-    def ch_query_keyed = ch_query.map { meta, vcf ->
-        [[id: meta.id, variant: meta.variant], meta, vcf]
+    def ch_query_keyed = ch_query.map { meta, vcf, tbi ->
+        [[id: meta.id, variant: meta.variant], meta, vcf, tbi]
     }
 
-    def ch_truth_keyed = ch_truth_final.map { meta, vcf ->
-        [[id: meta.id, variant: meta.variant], vcf]
+    def ch_truth_keyed = ch_truth_final.map { meta, vcf, tbi ->
+        [[id: meta.id, variant: meta.variant], vcf, tbi]
     }
 
     // Combine: each query gets paired with its truth
     def ch_isec_input = ch_query_keyed
         .combine(ch_truth_keyed, by: 0)
-        .map { _group_key, query_meta, query_vcf, truth_vcf ->
+        .map { _group_key, query_meta, query_vcf, query_tbi, truth_vcf, truth_tbi ->
             // bcftools isec input: [meta, [vcfs], [tbis], file_list, targets, regions]
             def meta = [
                 id: "${query_meta.id}_${query_meta.caller}_${query_meta.variant}",
@@ -143,7 +145,7 @@ workflow ONEMOREVARIANT {
                 caller: query_meta.caller,
                 variant: query_meta.variant,
             ]
-            [meta, [truth_vcf, query_vcf], [], [], [], []]
+            [meta, [truth_vcf, query_vcf], [truth_tbi, query_tbi], [], [], []]
         }
 
     BCFTOOLS_ISEC(ch_isec_input)
