@@ -2,7 +2,8 @@ process AGGREGATE_RESULTS {
     tag "${variant_type}"
     label 'process_single'
 
-    conda "conda-forge::python=3.11 conda-forge::pandas=2.2"
+    conda "${moduleDir}/environment.yml"
+    container "quay.io/shahlab_singularity/onemorevariant-aggregate:python-3.11_pandas-2.2--0f9e990626d9afe0"
 
     input:
     tuple val(variant_type), path(stratified_calls)

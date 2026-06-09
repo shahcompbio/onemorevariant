@@ -2,7 +2,8 @@ process STRATIFY_VARIANTS {
     tag "${meta.id}"
     label 'process_medium'
 
-    conda "conda-forge::python=3.11 bioconda::bedtools=2.31.1 bioconda::htslib=1.21"
+    conda "${moduleDir}/environment.yml"
+    container "quay.io/shahlab_singularity/onemorevariant-stratify:python-3.11_bedtools-2.31.1_htslib-1.21--e94d80e70c4b96a9"
 
     input:
     tuple val(meta), path(tp_vcf), path(fp_vcf), path(fn_vcf)
