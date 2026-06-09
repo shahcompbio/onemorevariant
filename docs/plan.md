@@ -157,17 +157,17 @@ Build a Nextflow DSL2 pipeline (nf-core style) that benchmarks somatic SNV/indel
 
 ## Decisions
 
-| Decision | Choice |
-|----------|--------|
-| Benchmarking tool | `bcftools isec` |
-| Samplesheet format | Generic long (sample, variant, caller, category, vcf) — future-proof |
-| Truth construction | Parameterized: `--snv_truth` (default union), `--indel_truth` (default strelka) |
-| Multiple query callers | Supported — each benchmarked independently |
-| Stratification | Post-hoc bedtools intersect; CSV manifest of BEDs |
-| Output format | Long-format stratified_calls + summary, separate SNV/indel files |
-| Normalization | `bcftools norm -m - -f` |
-| Tumor ID | Not needed (position-based matching) |
-| Module preference | Use nf-core modules over custom where available |
+| Decision               | Choice                                                                          |
+| ---------------------- | ------------------------------------------------------------------------------- |
+| Benchmarking tool      | `bcftools isec`                                                                 |
+| Samplesheet format     | Generic long (sample, variant, caller, category, vcf) — future-proof            |
+| Truth construction     | Parameterized: `--snv_truth` (default union), `--indel_truth` (default strelka) |
+| Multiple query callers | Supported — each benchmarked independently                                      |
+| Stratification         | Post-hoc bedtools intersect; CSV manifest of BEDs                               |
+| Output format          | Long-format stratified_calls + summary, separate SNV/indel files                |
+| Normalization          | `bcftools norm -m - -f`                                                         |
+| Tumor ID               | Not needed (position-based matching)                                            |
+| Module preference      | Use nf-core modules over custom where available                                 |
 
 ## Further Considerations
 
