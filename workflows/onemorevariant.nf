@@ -139,8 +139,16 @@ workflow ONEMOREVARIANT {
     // STEP 5: STRATIFY — bedtools intersect TP/FP/FN against stratification BEDs
     //
     if (params.stratification) {
-        // Prepare stratification manifest
-        def ch_stratification = channel.value(file(params.stratification, checkIfExists: true))
+        // Prepare stratification manifest and stage BED files
+        def manifest_file = file(params.stratification, checkIfExists: true)
+        def ch_stratification = channel.value(manifest_file)
+
+        // Parse the manifest CSV to collect BED file paths for staging
+        def ch_stratification_beds = channel.value(
+            manifest_file.readLines().drop(1).collect { line ->
+                file(line.split(',')[1].trim(), checkIfExists: true)
+            }
+        )
 
         // Extract TP, FP, FN VCFs from isec results directory
         def ch_isec_results = BCFTOOLS_ISEC.out.results.map { meta, results_dir ->
@@ -156,7 +164,7 @@ workflow ONEMOREVARIANT {
             [meta, tp, fp, fn]
         }
 
-        STRATIFY_VARIANTS(ch_isec_results, ch_stratification)
+        STRATIFY_VARIANTS(ch_isec_results, ch_stratification, ch_stratification_beds)
 
         //
         // STEP 6: AGGREGATE — collect per variant_type and compute summary stats
@@ -165,12 +173,14 @@ workflow ONEMOREVARIANT {
             .filter { meta, _calls -> meta.variant == 'snv' }
             .map { _meta, calls -> calls }
             .collect()
+            .filter { calls -> calls.size() > 0 }
             .map { calls -> ['snv', calls] }
 
         def ch_stratified_indel = STRATIFY_VARIANTS.out.stratified_calls
             .filter { meta, _calls -> meta.variant == 'indel' }
             .map { _meta, calls -> calls }
             .collect()
+            .filter { calls -> calls.size() > 0 }
             .map { calls -> ['indel', calls] }
 
         AGGREGATE_SNV(ch_stratified_snv)

@@ -138,7 +138,17 @@ def parse_stratification_manifest(manifest_path):
     with open(manifest_path) as fh:
         reader = csv.DictReader(fh)
         for row in reader:
-            beds.append((row["category"], row["bed"]))
+            bed_path = row["bed"]
+            # If the path doesn't exist, try finding by basename in current directory
+            if not os.path.exists(bed_path):
+                basename = os.path.basename(bed_path)
+                if os.path.exists(basename):
+                    bed_path = basename
+                else:
+                    raise FileNotFoundError(
+                        f"BED file not found: {row['bed']} (also tried {basename})"
+                    )
+            beds.append((row["category"], bed_path))
     return beds
 
 
