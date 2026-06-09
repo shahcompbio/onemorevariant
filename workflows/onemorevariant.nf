@@ -42,9 +42,9 @@ workflow ONEMOREVARIANT {
     //
     // STEP 1: PREPROCESS — bcftools view (PASS filter + contig filter) on all VCFs
     //
-    // Input channel: [ meta, vcf, [], [] ] — no regions, no targets files, no samples
+    // Input channel: [ meta, vcf, index ] — no index available at this stage
     def ch_view_input = ch_samplesheet.map { meta, vcf ->
-        [meta, vcf, [], []]
+        [meta, vcf, []]
     }
 
     BCFTOOLS_VIEW(ch_view_input, [], [], [])
