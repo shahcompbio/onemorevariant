@@ -6,7 +6,7 @@ process STRATIFY_VARIANTS {
     container "quay.io/shahlab_singularity/onemorevariant-stratify:python-3.11_bedtools-2.31.1_htslib-1.21--e94d80e70c4b96a9"
 
     input:
-    tuple val(meta), path(tp_vcf), path(fp_vcf), path(fn_vcf)
+    tuple val(meta), path(tp_vcf), path(tp_query_vcf), path(fp_vcf), path(fn_vcf)
     path stratification_manifest
     path stratification_beds
 
@@ -24,6 +24,7 @@ process STRATIFY_VARIANTS {
     """
     stratify_variants.py \\
         --tp ${tp_vcf} \\
+        --tp-query ${tp_query_vcf} \\
         --fp ${fp_vcf} \\
         --fn ${fn_vcf} \\
         --stratification ${stratification_manifest} \\

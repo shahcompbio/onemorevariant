@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Stratify TP/FP/FN variants by genomic region using bedtools intersect.
 
-Produces a long-format TSV with one row per variant × category overlap.
+Produces a long-format TSV with one row per variant × category overlap,
+annotated with VCF quality metrics from both the query and truth VCFs.
 """
 
 import argparse
@@ -9,26 +10,61 @@ import csv
 import gzip
 import os
 import subprocess
-import sys
 import tempfile
 
 
-def parse_vcf_records(vcf_path):
-    """Parse VCF and yield (chrom, pos, ref, alt) tuples."""
+def parse_vcf_with_metrics(vcf_path):
+    """Parse VCF and return dict keyed by (chrom, pos, ref, alt) with quality metrics.
+
+    Extracts:
+      - qual: QUAL column
+      - gq: FORMAT/GQ
+      - dp: FORMAT/DP
+      - af: FORMAT/AF
+      - naf: FORMAT/NAF
+      - ndp: FORMAT/NDP
+      - haplotype_support: INFO/H flag (1 if present, 0 otherwise)
+    """
+    records = {}
+    format_fields_of_interest = {"GQ", "DP", "AF", "NAF", "NDP"}
+
     opener = gzip.open if vcf_path.endswith(".gz") else open
     with opener(vcf_path, "rt") as fh:
         for line in fh:
             if line.startswith("#"):
                 continue
             fields = line.strip().split("\t")
-            chrom, pos, _, ref, alt = (
-                fields[0],
-                fields[1],
-                fields[2],
-                fields[3],
-                fields[4],
-            )
-            yield chrom, pos, ref, alt
+            chrom = fields[0]
+            pos = fields[1]
+            ref = fields[3]
+            alt = fields[4]
+            qual = fields[5] if fields[5] != "." else ""
+
+            # Parse INFO for H flag
+            info = fields[7] if len(fields) > 7 else ""
+            info_fields = info.split(";") if info else []
+            haplotype_support = "1" if "H" in info_fields else "0"
+
+            # Parse FORMAT fields
+            metrics = {f: "" for f in format_fields_of_interest}
+            if len(fields) > 9:
+                fmt_keys = fields[8].split(":")
+                fmt_vals = fields[9].split(":")
+                for key, val in zip(fmt_keys, fmt_vals):
+                    if key in format_fields_of_interest:
+                        metrics[key] = val if val != "." else ""
+
+            records[(chrom, pos, ref, alt)] = {
+                "qual": qual,
+                "gq": metrics.get("GQ", ""),
+                "dp": metrics.get("DP", ""),
+                "af": metrics.get("AF", ""),
+                "naf": metrics.get("NAF", ""),
+                "ndp": metrics.get("NDP", ""),
+                "haplotype_support": haplotype_support,
+            }
+
+    return records
 
 
 def vcf_to_bed(vcf_path, bed_path):
@@ -71,9 +107,17 @@ def intersect_bed(variant_bed, region_bed):
 
 
 def classify_variants(
-    vcf_path, classification, sample, caller, variant_type, stratification_beds, tmpdir
+    vcf_path,
+    classification,
+    sample,
+    caller,
+    variant_type,
+    stratification_beds,
+    tmpdir,
+    query_metrics,
+    truth_metrics,
 ):
-    """Classify variants from a VCF by stratification category."""
+    """Classify variants from a VCF by stratification category, annotating with quality metrics."""
     rows = []
 
     # Convert VCF to BED
@@ -91,43 +135,57 @@ def classify_variants(
             fields = line.strip().split("\t")
             all_variants.add((fields[0], fields[1], fields[2], fields[3], fields[4]))
 
+    def make_row(chrom, start, ref, alt, category):
+        pos = str(int(start) + 1)  # Convert back to 1-based
+        row = {
+            "sample": sample,
+            "caller": caller,
+            "chrom": chrom,
+            "pos": pos,
+            "ref": ref,
+            "alt": alt,
+            "variant_type": variant_type,
+            "classification": classification,
+            "category": category,
+        }
+        # Add query metrics (ClairS) for TP and FP
+        key = (chrom, pos, ref, alt)
+        if classification in ("TP", "FP") and query_metrics:
+            m = query_metrics.get(key, {})
+            row["qual"] = m.get("qual", "")
+            row["gq"] = m.get("gq", "")
+            row["dp"] = m.get("dp", "")
+            row["af"] = m.get("af", "")
+            row["naf"] = m.get("naf", "")
+            row["ndp"] = m.get("ndp", "")
+            row["haplotype_support"] = m.get("haplotype_support", "")
+        else:
+            row["qual"] = ""
+            row["gq"] = ""
+            row["dp"] = ""
+            row["af"] = ""
+            row["naf"] = ""
+            row["ndp"] = ""
+            row["haplotype_support"] = ""
+        # Add truth QUAL for TP and FN
+        if classification in ("TP", "FN") and truth_metrics:
+            m = truth_metrics.get(key, {})
+            row["truth_qual"] = m.get("qual", "")
+        else:
+            row["truth_qual"] = ""
+        return row
+
     # For each stratification BED, find overlapping variants
     categorized = set()
     for category, bed_path in stratification_beds:
         overlapping = intersect_bed(variant_bed, bed_path)
         for chrom, start, end, ref, alt in overlapping:
-            pos = str(int(start) + 1)  # Convert back to 1-based
-            rows.append(
-                {
-                    "sample": sample,
-                    "caller": caller,
-                    "chrom": chrom,
-                    "pos": pos,
-                    "ref": ref,
-                    "alt": alt,
-                    "variant_type": variant_type,
-                    "classification": classification,
-                    "category": category,
-                }
-            )
+            rows.append(make_row(chrom, start, ref, alt, category))
             categorized.add((chrom, start, end, ref, alt))
 
     # Variants not in any category get "Unclassified"
     for chrom, start, end, ref, alt in all_variants - categorized:
-        pos = str(int(start) + 1)
-        rows.append(
-            {
-                "sample": sample,
-                "caller": caller,
-                "chrom": chrom,
-                "pos": pos,
-                "ref": ref,
-                "alt": alt,
-                "variant_type": variant_type,
-                "classification": classification,
-                "category": "Unclassified",
-            }
-        )
+        rows.append(make_row(chrom, start, ref, alt, "Unclassified"))
 
     return rows
 
@@ -154,9 +212,14 @@ def parse_stratification_manifest(manifest_path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--tp", required=True, help="TP VCF file")
-    parser.add_argument("--fp", required=True, help="FP VCF file")
-    parser.add_argument("--fn", required=True, help="FN VCF file")
+    parser.add_argument(
+        "--tp", required=True, help="TP VCF (truth perspective, isec 0002)"
+    )
+    parser.add_argument(
+        "--tp-query", default=None, help="TP VCF (query perspective, isec 0003)"
+    )
+    parser.add_argument("--fp", required=True, help="FP VCF (query-private, isec 0001)")
+    parser.add_argument("--fn", required=True, help="FN VCF (truth-private, isec 0000)")
     parser.add_argument(
         "--stratification", required=True, help="Stratification manifest CSV"
     )
@@ -169,6 +232,18 @@ def main():
     args = parser.parse_args()
 
     stratification_beds = parse_stratification_manifest(args.stratification)
+
+    # Build quality metric lookups
+    # Query metrics: from tp_query (0003, ClairS perspective of TPs) and fp (0001, ClairS FPs)
+    query_metrics = {}
+    if args.tp_query:
+        query_metrics.update(parse_vcf_with_metrics(args.tp_query))
+    query_metrics.update(parse_vcf_with_metrics(args.fp))
+
+    # Truth metrics: from tp (0002, truth perspective of TPs) and fn (0000, truth FNs)
+    truth_metrics = {}
+    truth_metrics.update(parse_vcf_with_metrics(args.tp))
+    truth_metrics.update(parse_vcf_with_metrics(args.fn))
 
     all_rows = []
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -185,6 +260,8 @@ def main():
                 args.variant_type,
                 stratification_beds,
                 tmpdir,
+                query_metrics,
+                truth_metrics,
             )
             all_rows.extend(rows)
 
@@ -199,6 +276,14 @@ def main():
         "variant_type",
         "classification",
         "category",
+        "qual",
+        "gq",
+        "dp",
+        "af",
+        "naf",
+        "ndp",
+        "haplotype_support",
+        "truth_qual",
     ]
     with open(args.output, "w", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames, delimiter="\t")

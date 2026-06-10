@@ -170,13 +170,16 @@ workflow ONEMOREVARIANT {
             def tp = file("${results_dir}/0002.vcf.gz").exists()
                 ? file("${results_dir}/0002.vcf.gz")
                 : file("${results_dir}/0002.vcf")
+            def tp_query = file("${results_dir}/0003.vcf.gz").exists()
+                ? file("${results_dir}/0003.vcf.gz")
+                : file("${results_dir}/0003.vcf")
             def fp = file("${results_dir}/0001.vcf.gz").exists()
                 ? file("${results_dir}/0001.vcf.gz")
                 : file("${results_dir}/0001.vcf")
             def fn = file("${results_dir}/0000.vcf.gz").exists()
                 ? file("${results_dir}/0000.vcf.gz")
                 : file("${results_dir}/0000.vcf")
-            [meta, tp, fp, fn]
+            [meta, tp, tp_query, fp, fn]
         }
 
         STRATIFY_VARIANTS(ch_isec_results, ch_stratification, ch_stratification_beds)
