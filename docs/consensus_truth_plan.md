@@ -7,10 +7,12 @@ Add a `consensus` truth construction strategy to onemorevariant that builds trut
 ## Motivation
 
 The current `union` and `intersect` strategies have limitations for cross-platform benchmarking:
+
 - **`union`** (any caller) is too permissive — includes low-confidence single-caller variants
 - **`intersect`** (all callers) is too strict — requires agreement from every caller, which is rare across platforms with different error profiles
 
 **`consensus` (≥2/N)** is the sweet spot: a variant needs support from at least two independent callers/platforms to enter the truth set. This:
+
 - Reduces platform bias (ONT-confirmed variants get credit if one Illumina caller also sees them)
 - Avoids circularity (a single caller can't place variants into truth alone)
 - Matches established benchmarking practice in the field
@@ -18,6 +20,7 @@ The current `union` and `intersect` strategies have limitations for cross-platfo
 ## Use Case (APS066)
 
 Benchmark ClairS (ONT) somatic SNV/indel calls using a consensus truth:
+
 - **SNV truth:** ≥2 of {Mutect2, Strelka2, ClairS} agree
 - **Indel truth:** ≥2 of {Strelka2, ClairS} agree (equivalent to Strelka2 ∩ ClairS for N=2)
 
@@ -56,6 +59,7 @@ if (strategy == 'consensus') {
 **Input:** meta + list of N normalized truth VCFs + their indices
 
 **Logic (bash/bcftools):**
+
 1. Compute all pairwise intersections using `bcftools isec -n=2 -w1`:
    - For N truth VCFs, this is N×(N-1)/2 pairwise comparisons
    - Each produces variants from VCF_i that are also in VCF_j (positional match)
@@ -70,6 +74,7 @@ if (strategy == 'consensus') {
 **Output:** `consensus_truth.vcf.gz` + `.tbi`
 
 **Script sketch:**
+
 ```bash
 #!/bin/bash
 set -euo pipefail
@@ -117,6 +122,7 @@ CONSENSUS_TRUTH(ch_truth_consensus)
 ### Config Changes
 
 Update `nextflow.config` params docs and `nextflow_schema.json`:
+
 - `--snv_truth` options: `"union"`, `"intersect"`, `"consensus"`, or a caller name
 - `--indel_truth` options: same
 
@@ -128,14 +134,14 @@ Update `nextflow.config` params docs and `nextflow_schema.json`:
 
 ## Files to Modify/Create
 
-| File | Action |
-|------|--------|
-| `workflows/onemorevariant.nf` | Add `consensus` strategy branch + wire CONSENSUS_TRUTH process |
-| `modules/local/consensus_truth/main.nf` | New process (pairwise isec → union) |
-| `nextflow.config` | Update param docs |
-| `nextflow_schema.json` | Add "consensus" to enum |
-| `docs/usage.md` | Document consensus mode with example samplesheet |
-| `conf/test_consensus.config` | Test profile for consensus mode |
+| File                                    | Action                                                         |
+| --------------------------------------- | -------------------------------------------------------------- |
+| `workflows/onemorevariant.nf`           | Add `consensus` strategy branch + wire CONSENSUS_TRUTH process |
+| `modules/local/consensus_truth/main.nf` | New process (pairwise isec → union)                            |
+| `nextflow.config`                       | Update param docs                                              |
+| `nextflow_schema.json`                  | Add "consensus" to enum                                        |
+| `docs/usage.md`                         | Document consensus mode with example samplesheet               |
+| `conf/test_consensus.config`            | Test profile for consensus mode                                |
 
 ## Verification Criteria
 
