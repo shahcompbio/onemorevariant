@@ -2,7 +2,7 @@
 """Stratify TP/FP/FN variants by genomic region using bedtools intersect.
 
 Produces a long-format TSV with one row per variant × category overlap,
-annotated with VCF quality metrics from both the query and truth VCFs.
+annotated with VCF quality metrics from the query VCF.
 """
 
 import argparse
@@ -115,7 +115,6 @@ def classify_variants(
     stratification_beds,
     tmpdir,
     query_metrics,
-    truth_metrics,
 ):
     """Classify variants from a VCF by stratification category, annotating with quality metrics."""
     rows = []
@@ -167,12 +166,7 @@ def classify_variants(
             row["naf"] = ""
             row["ndp"] = ""
             row["haplotype_support"] = ""
-        # Add truth QUAL for TP and FN
-        if classification in ("TP", "FN") and truth_metrics:
-            m = truth_metrics.get(key, {})
-            row["truth_qual"] = m.get("qual", "")
-        else:
-            row["truth_qual"] = ""
+
         return row
 
     # For each stratification BED, find overlapping variants
@@ -240,10 +234,6 @@ def main():
         query_metrics.update(parse_vcf_with_metrics(args.tp_query))
     query_metrics.update(parse_vcf_with_metrics(args.fp))
 
-    # Truth metrics: from tp (0002, truth perspective of TPs) and fn (0000, truth FNs)
-    truth_metrics = {}
-    truth_metrics.update(parse_vcf_with_metrics(args.tp))
-    truth_metrics.update(parse_vcf_with_metrics(args.fn))
 
     all_rows = []
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -261,7 +251,6 @@ def main():
                 stratification_beds,
                 tmpdir,
                 query_metrics,
-                truth_metrics,
             )
             all_rows.extend(rows)
 
@@ -283,7 +272,6 @@ def main():
         "naf",
         "ndp",
         "haplotype_support",
-        "truth_qual",
     ]
     with open(args.output, "w", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames, delimiter="\t")
