@@ -1,0 +1,25 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://raw.githubusercontent.com/shahcompbio/onemorevariant/master/assets/schema_stratification.json",
+    "title": "shahcompbio/onemorevariant pipeline - params.stratification schema",
+    "description": "Schema for the file provided with params.stratification",
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "category": {
+                "type": "string",
+                "pattern": "^\\S+$",
+                "errorMessage": "Category name must be provided and cannot contain spaces"
+            },
+            "bed": {
+                "type": "string",
+                "format": "file-path",
+                "exists": true,
+                "pattern": "^\\S+\\.bed(\\.gz)?$",
+                "errorMessage": "BED file must be provided, cannot contain spaces and must have extension '.bed' or '.bed.gz'"
+            }
+        },
+        "required": ["category", "bed"]
+    }
+}

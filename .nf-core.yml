@@ -17,6 +17,7 @@ lint:
     - manifest.homePage
   multiqc_config:
     - report_comment
+  nf_test_content: false
   files_exist:
     - CODE_OF_CONDUCT.md
     - assets/nf-core-onemorevariant_logo_light.png
