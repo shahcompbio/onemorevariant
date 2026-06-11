@@ -106,13 +106,13 @@
                 "snv_truth": {
                     "type": "string",
                     "default": "union",
-                    "description": "Strategy for constructing SNV truth set from truth-category VCFs. Options: 'union' (default), 'intersect', or a specific caller name.",
+                    "description": "Strategy for constructing SNV truth set from truth-category VCFs. Options: 'union' (default), 'intersect', 'consensus' (>=2/N agreement), or a specific caller name.",
                     "fa_icon": "fas fa-crosshairs"
                 },
                 "indel_truth": {
                     "type": "string",
                     "default": "strelka",
-                    "description": "Strategy for constructing indel truth set from truth-category VCFs. Options: 'union', 'intersect', or a specific caller name (default: 'strelka').",
+                    "description": "Strategy for constructing indel truth set from truth-category VCFs. Options: 'union', 'intersect', 'consensus' (>=2/N agreement), or a specific caller name (default: 'strelka').",
                     "fa_icon": "fas fa-crosshairs"
                 }
             }

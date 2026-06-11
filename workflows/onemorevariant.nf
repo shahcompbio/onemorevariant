@@ -6,13 +6,16 @@
 include { MULTIQC                              } from '../modules/nf-core/multiqc/main'
 include { BCFTOOLS_VIEW                        } from '../modules/nf-core/bcftools/view/main'
 include { BCFTOOLS_NORM                        } from '../modules/nf-core/bcftools/norm/main'
-include { BCFTOOLS_CONCAT                      } from '../modules/nf-core/bcftools/concat/main'
-include { BCFTOOLS_SORT                        } from '../modules/nf-core/bcftools/sort/main'
-include { BCFTOOLS_ISEC                        } from '../modules/nf-core/bcftools/isec/main'
-include { BCFTOOLS_REHEADER                    } from '../modules/nf-core/bcftools/reheader/main'
-include { STRATIFY_VARIANTS                    } from '../modules/local/stratify_variants/main'
-include { AGGREGATE_RESULTS as AGGREGATE_SNV   } from '../modules/local/aggregate_results/main'
-include { AGGREGATE_RESULTS as AGGREGATE_INDEL } from '../modules/local/aggregate_results/main'
+include { BCFTOOLS_CONCAT                              } from '../modules/nf-core/bcftools/concat/main'
+include { BCFTOOLS_CONCAT as BCFTOOLS_CONCAT_CONSENSUS } from '../modules/nf-core/bcftools/concat/main'
+include { BCFTOOLS_SORT                                } from '../modules/nf-core/bcftools/sort/main'
+include { BCFTOOLS_SORT as BCFTOOLS_SORT_CONSENSUS     } from '../modules/nf-core/bcftools/sort/main'
+include { BCFTOOLS_ISEC                                } from '../modules/nf-core/bcftools/isec/main'
+include { BCFTOOLS_ISEC as BCFTOOLS_ISEC_CONSENSUS     } from '../modules/nf-core/bcftools/isec/main'
+include { BCFTOOLS_REHEADER                            } from '../modules/nf-core/bcftools/reheader/main'
+include { STRATIFY_VARIANTS                            } from '../modules/local/stratify_variants/main'
+include { AGGREGATE_RESULTS as AGGREGATE_SNV           } from '../modules/local/aggregate_results/main'
+include { AGGREGATE_RESULTS as AGGREGATE_INDEL         } from '../modules/local/aggregate_results/main'
 include { paramsSummaryMap                     } from 'plugin/nf-schema'
 include { paramsSummaryMultiqc                 } from '../subworkflows/nf-core/utils_nfcore_pipeline'
 include { softwareVersionsToYAML               } from '../subworkflows/nf-core/utils_nfcore_pipeline'
@@ -94,6 +97,10 @@ workflow ONEMOREVARIANT {
                 // Intersect — will be handled by isec downstream
                 return [[id: group_key.id, variant: group_key.variant, _intersect: true], vcfs, tbis]
             }
+            else if (strategy == 'consensus') {
+                // Consensus — >=2/N agreement via pairwise intersections
+                return [[id: group_key.id, variant: group_key.variant, _consensus: true], vcfs, tbis]
+            }
             else if (strategy != 'union' && strategy in callers) {
                 // Single caller strategy — find matching VCF
                 def idx = callers.indexOf(strategy)
@@ -105,13 +112,32 @@ workflow ONEMOREVARIANT {
             }
         }
 
+    // For consensus strategy: bcftools isec -n+2 → concat → sort
+    def ch_truth_consensus = ch_truth_grouped
+        .filter { meta, _vcfs, _tbis -> meta.containsKey('_consensus') }
+        .map { meta, vcfs, tbis -> [meta.subMap('id', 'variant'), vcfs, tbis, [], [], []] }
+
+    BCFTOOLS_ISEC_CONSENSUS(ch_truth_consensus)
+
+    // Extract numbered VCFs from isec output directory
+    def ch_consensus_isec_vcfs = BCFTOOLS_ISEC_CONSENSUS.out.results.map { meta, dir ->
+        def vcfs = file("${dir}/*.vcf.gz").sort()
+        def tbis = vcfs.collect { vcf -> file("${vcf}.tbi") }
+        [meta, vcfs, tbis]
+    }
+
+    BCFTOOLS_CONCAT_CONSENSUS(ch_consensus_isec_vcfs)
+    BCFTOOLS_SORT_CONSENSUS(BCFTOOLS_CONCAT_CONSENSUS.out.vcf)
+
+    def ch_consensus_truth_out = BCFTOOLS_SORT_CONSENSUS.out.vcf.join(BCFTOOLS_SORT_CONSENSUS.out.index, by: [0])
+
     // For union strategy: concat (with --remove-duplicates) → sort
     def ch_truth_to_concat = ch_truth_grouped
-        .filter { meta, vcfs, _tbis -> !meta.containsKey('_intersect') && vcfs.size() > 1 }
+        .filter { meta, vcfs, _tbis -> !meta.containsKey('_intersect') && !meta.containsKey('_consensus') && vcfs.size() > 1 }
         .map { meta, vcfs, tbis -> [meta, vcfs, tbis] }
 
     def ch_truth_single = ch_truth_grouped
-        .filter { meta, vcfs, _tbis -> !meta.containsKey('_intersect') && vcfs.size() == 1 }
+        .filter { meta, vcfs, _tbis -> !meta.containsKey('_intersect') && !meta.containsKey('_consensus') && vcfs.size() == 1 }
         .map { meta, vcfs, tbis -> [meta, vcfs[0], tbis[0]] }
 
     BCFTOOLS_CONCAT(ch_truth_to_concat)
@@ -120,7 +146,7 @@ workflow ONEMOREVARIANT {
     // Combine single-VCF truth with concat+sort multi-VCF truth (with indexes)
     def ch_truth_sort_with_idx = BCFTOOLS_SORT.out.vcf.join(BCFTOOLS_SORT.out.index, by: [0])
 
-    def ch_truth_final = ch_truth_single.mix(ch_truth_sort_with_idx)
+    def ch_truth_final = ch_truth_single.mix(ch_truth_sort_with_idx).mix(ch_consensus_truth_out)
 
     //
     // STEP 4: BENCHMARK — bcftools isec (truth vs query)
